@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 from pytorch_lightning.loggers import WandbLogger 
+from pytorch_lightning.callbacks import ModelCheckpoint
 from utils import *
 
 class DeepLab(pl.LightningModule):
@@ -22,7 +23,7 @@ class DeepLab(pl.LightningModule):
 		return self.deeplab(x)['out']
 
 	def configure_optimizers(self):
-		optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+		optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
 		return optimizer
 
 	def training_step(self,train_batch,batch_idx):
@@ -38,10 +39,22 @@ class DeepLab(pl.LightningModule):
 		x,y = val_batch
 		preds = self.forward(x)
 		loss = F.binary_cross_entropy_with_logits(preds,y)
+		dice_score = dice_metric( (preds>0.).float(),y)
 
 		self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-		self.log('val_dice', dice_metric( (preds>0.).float(),y), on_step=False, on_epoch=True, prog_bar=True, logger=True)
+		self.log('val_dice', dice_score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 		return loss
+
+	def test_step(self,test_batch,batch_idx):
+
+		x,y = test_batch	
+		preds = self.forward(x)
+		dice_score = dice_metric( (preds>0.).float(),y)
+		self.log('test_dice', dice_score, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+
+		return dice_score
+		
+		
 		
 
 if __name__ == "__main__":
@@ -59,19 +72,29 @@ if __name__ == "__main__":
 	wandb.init(project="rv-image-segmentation",reinit=True)
 	wandb_logger = WandbLogger()
 	model = DeepLab()
+
+	## save best val loss
+
+	checkpoint_callback = ModelCheckpoint(monitor='val_loss')
 	trainer = pl.Trainer(gpus = [0],
 						 precision=16,
 						 logger= wandb_logger,
-#						 limit_train_batches=0.01,
-#						 limit_val_batches=0.0,
-						 max_epochs=40)
+#						 limit_train_batches=0.1,
+#						 limit_val_batches=0.1,
+						 max_epochs=20,
+						 callbacks=[checkpoint_callback]
+						 )
 	trainer.fit(model,train_loader,val_loader)
 
 	# visualize results
 	sample, mask = iter(train_loader).next()
 	sample_preds = model(sample)
-
 	viz_table = wandb.Table(columns=["image", "predicted_mask","real_mask"])
+
 	for idx in range(len(sample[0])):
 		viz_table.add_data(wandb.Image(sample[idx]), wandb.Image( (sample_preds[idx]>0.).float() ), wandb.Image(mask[idx]))
 	wandb.log({"deeplab_predictions": viz_table})
+
+	# test set
+	trainer.test(test_dataloaders=test_loader)
+
