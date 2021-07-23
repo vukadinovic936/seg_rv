@@ -1,0 +1,5 @@
+*.log
+hparams*
+*.pyc*
+*wandb*
+*tfevents*
